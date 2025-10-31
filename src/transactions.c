@@ -36,6 +36,117 @@ void log_transaction(int accountID, TransactionType type, float amount, float ol
     close(fd);
 }
 
+int transfer_funds(int sock, int from_account, int to_account, float amount)
+{
+    if (amount <= 0)
+    {
+        write_to_client(sock, "Invalid transfer amount.\n");
+        return -1;
+    }
+
+    int fd = open(ACCOUNT_FILE, O_RDWR);
+    if (fd < 0)
+    {
+        write_to_client(sock, "Error: Cannot access account data.\n");
+        return -1;
+    }
+
+    // Find both accounts
+    long from_offset = find_account_offset(fd, from_account);
+    long to_offset = find_account_offset(fd, to_account);
+
+    if (from_offset == -1 || to_offset == -1)
+    {
+        write_to_client(sock, "Error: One or both accounts not found.\n");
+        close(fd);
+        return -1;
+    }
+
+    // Lock both accounts (in order of offset to prevent deadlocks)
+    struct flock lock1, lock2;
+    memset(&lock1, 0, sizeof(lock1));
+    memset(&lock2, 0, sizeof(lock2));
+
+    lock1.l_type = F_WRLCK;
+    lock1.l_whence = SEEK_SET;
+    lock1.l_start = (from_offset < to_offset) ? from_offset : to_offset;
+    lock1.l_len = sizeof(Account);
+
+    lock2.l_type = F_WRLCK;
+    lock2.l_whence = SEEK_SET;
+    lock2.l_start = (from_offset < to_offset) ? to_offset : from_offset;
+    lock2.l_len = sizeof(Account);
+
+    // Acquire locks
+    if (fcntl(fd, F_SETLKW, &lock1) == -1 || fcntl(fd, F_SETLKW, &lock2) == -1)
+    {
+        write_to_client(sock, "Error: Cannot lock accounts for transfer.\n");
+        close(fd);
+        return -1;
+    }
+
+    // Read accounts
+    Account from_acc, to_acc;
+    lseek(fd, from_offset, SEEK_SET);
+    read(fd, &from_acc, sizeof(Account));
+    lseek(fd, to_offset, SEEK_SET);
+    read(fd, &to_acc, sizeof(Account));
+
+    // Check account status
+    if (!from_acc.is_active || !to_acc.is_active)
+    {
+        write_to_client(sock, "Error: One or both accounts are deactivated.\n");
+        lock1.l_type = F_UNLCK;
+        lock2.l_type = F_UNLCK;
+        fcntl(fd, F_SETLK, &lock1);
+        fcntl(fd, F_SETLK, &lock2);
+        close(fd);
+        return -1;
+    }
+
+    // Check sufficient balance
+    if (from_acc.balance < amount)
+    {
+        write_to_client(sock, "Error: Insufficient balance for transfer.\n");
+        lock1.l_type = F_UNLCK;
+        lock2.l_type = F_UNLCK;
+        fcntl(fd, F_SETLK, &lock1);
+        fcntl(fd, F_SETLK, &lock2);
+        close(fd);
+        return -1;
+    }
+
+    // Perform transfer
+    float from_old_bal = from_acc.balance;
+    float to_old_bal = to_acc.balance;
+
+    from_acc.balance -= amount;
+    to_acc.balance += amount;
+
+    // Write back updated accounts
+    lseek(fd, from_offset, SEEK_SET);
+    write(fd, &from_acc, sizeof(Account));
+    lseek(fd, to_offset, SEEK_SET);
+    write(fd, &to_acc, sizeof(Account));
+
+    // Log transactions for both accounts
+    log_transaction(from_acc.account_no, TRANSFER_SENT, amount, from_old_bal, from_acc.balance);
+    log_transaction(to_acc.account_no, TRANSFER_RECEIVED, amount, to_old_bal, to_acc.balance);
+
+    // Release locks
+    lock1.l_type = F_UNLCK;
+    lock2.l_type = F_UNLCK;
+    fcntl(fd, F_SETLK, &lock1);
+    fcntl(fd, F_SETLK, &lock2);
+    close(fd);
+
+    char buffer[1024];
+    sprintf(buffer, "Successfully transferred %.2f from account %d to account %d.\n", 
+            amount, from_account, to_account);
+    write_to_client(sock, buffer);
+    return 0;
+}
+
 void view_transactions(int sock, int account_no)
 {
     int fd = open(TRANSACTION_FILE, O_RDONLY);

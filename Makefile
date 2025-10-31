@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -pthread
-SRCS = server1.c \
+SRCS = server.c \
        src/file_helpers.c \
        src/transactions.c \
        src/feedback.c \

@@ -400,13 +400,13 @@ void employee_menu(int sock, User emp_user)
     char buffer[1024];
     while (1)
     {
-        write_to_client(sock, "\n--- Employee Menu ---\n1. Add New Customer\n2. Modify Customer Details\n3. Process (Claim) Loan\n4. View Customer Transactions\n5. View Feedbacks\n6. Exit\nChoice: ");
+        write_to_client(sock, "\n--- Employee Menu ---\n1. Add New Customer\n2. Modify Customer Details\n3. Process (Claim) Loan\n4. View Pending Loans\n5. View Customer Transactions\n6. View Feedbacks\n7. Exit\nChoice: ");
         int choice;
         if (read_from_client(sock, buffer, sizeof(buffer)) <= 0)
-            choice = 6; // Force exit on disconnect
+            choice = 7; // Force exit on disconnect
         else
             choice = atoi(buffer);
-        if (choice == 6)
+        if (choice == 7)
             break;
 
         if (choice == 1)
@@ -428,12 +428,16 @@ void employee_menu(int sock, User emp_user)
         }
         else if (choice == 4)
         {
+            view_pending_loans(sock);
+        }
+        else if (choice == 5)
+        {
             write_to_client(sock, "Enter Customer Account Number: ");
             read_from_client(sock, buffer, sizeof(buffer));
             int acc_no = atoi(buffer);
             view_transactions(sock, acc_no);
         }
-        else if (choice == 5)
+        else if (choice == 6)
         {
             view_feedbacks(sock);
         }
@@ -471,7 +475,8 @@ void customer_menu(int sock, User user, Account account)
                         "6. Apply for Loan\n"
                         "7. View My Transactions\n"
                         "8. Give Feedback\n"
-                        "9. Exit\n"
+                        "9. Transfer Funds\n"
+                        "10. Exit\n"
                         "Choice: ",
                 user.name, account.account_no);
         write_to_client(sock, buffer);
@@ -483,10 +488,10 @@ void customer_menu(int sock, User user, Account account)
         else
         {
             choice = atoi(buffer);
-            if (choice == 9)
+            if (choice == 10)
                 break;
 
-            if (!account.is_active && choice != 4 && choice != 9 && choice != 8)
+            if (!account.is_active && choice != 4 && choice != 10 && choice != 8)
             {
                 write_to_client(sock, "Your bank account is deactivated. Please contact a manager.\n");
                 continue;
@@ -598,6 +603,26 @@ void customer_menu(int sock, User user, Account account)
                 read_from_client(sock, buffer, sizeof(buffer));
                 give_feedback(account.account_no, buffer);
                 write_to_client(sock, "Thank you for your feedback.\n");
+            }
+            else if (choice == 9)
+            {
+                // Transfer funds
+                write_to_client(sock, "Enter destination account number: ");
+                read_from_client(sock, buffer, sizeof(buffer));
+                int to_account = atoi(buffer);
+
+                if (to_account == account.account_no)
+                {
+                    write_to_client(sock, "Cannot transfer to your own account.\n");
+                }
+                else
+                {
+                    write_to_client(sock, "Enter amount to transfer: ");
+                    read_from_client(sock, buffer, sizeof(buffer));
+                    float amount = atof(buffer);
+
+                    transfer_funds(sock, account.account_no, to_account, amount);
+                }
             }
             else
             {

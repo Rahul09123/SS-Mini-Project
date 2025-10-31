@@ -12,6 +12,7 @@
 #include <sys/file.h>
 #include <errno.h>
 #include <time.h>
+#include <pthread.h>
 
 #define PORT 8080
 #define MAX_CLIENTS 10
@@ -41,7 +42,9 @@ typedef enum
 {
     DEPOSIT = 1,
     WITHDRAWAL = 2,
-    LOAN_DEPOSIT = 3
+    LOAN_DEPOSIT = 3,
+    TRANSFER_SENT = 4,
+    TRANSFER_RECEIVED = 5
 } TransactionType;
 
 // User struct: For (Admin, Manager, Employee, Customer)
@@ -110,6 +113,7 @@ void initialize_admin();
 // Transactions
 void log_transaction(int accountID, TransactionType type, float amount, float oldBalance, float newBalance);
 void view_transactions(int sock, int account_no);
+int transfer_funds(int sock, int from_account, int to_account, float amount);
 
 // Feedback
 void give_feedback(int accountID, const char *message);
