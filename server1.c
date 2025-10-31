@@ -13,14 +13,15 @@
 
 #define PORT 8080
 #define MAX_CLIENTS 10
-// New file definitions
+
 #define USER_FILE "users.dat"
 #define ACCOUNT_FILE "accounts.dat"
 #define LOAN_FILE "loans.dat"
 #define TRANSACTION_FILE "transactions.dat"
+#define FEEDBACK "feedback.dat"
 
-// --- MODIFIED: Globals for login management ---
-pthread_spinlock_t login_lock; // Renamed for clarity, was login_mutex
+// --- Globals for login management ---
+pthread_spinlock_t login_lock; // applying spin lock for the multiple user logins
 int logged_in_users[MAX_CLIENTS];
 
 // Role-based access
@@ -45,20 +46,20 @@ typedef enum
     LOAN_DEPOSIT = 3
 } TransactionType;
 
-// User struct: For ALL logins (Admin, Manager, Employee, Customer)
+// User struct: For (Admin, Manager, Employee, Customer)
 typedef struct
 {
-    int userID; // Primary key for this file
+    int userID; // used for searching
     char name[50];
     char password[20];
     Role role;
     int is_active; // 1 = active, 0 = inactive
 } User;
 
-// Account struct: For customer bank accounts ONLY
+// Account for custormer only
 typedef struct
 {
-    int account_no; // Primary key, links to User.userID
+    int account_no;
     float balance;
     int is_active; // For manager to activate/deactivate
 } Account;
@@ -85,6 +86,12 @@ typedef struct
     time_t timestamp;
 } Transaction;
 
+typedef struct{
+    int accountID;
+    char message[1034];
+} Feedback;
+
+
 // --- Function Declarations ---
 void *handle_client(void *sock);
 void customer_menu(int sock, User user, Account account);
@@ -97,6 +104,7 @@ void assign_loan(int sock);
 void employee_process_loan(int sock, User emp_user);
 void view_transactions(int sock, int account_no);
 void customer_apply_loan(int sock, User user);
+void view_feedback(int sock);
 
 // File Helpers
 long find_user_offset(int fd, int userID);
@@ -108,6 +116,7 @@ long get_next_loan_id(int fd);
 long get_next_transaction_id(int fd);
 void initialize_admin();
 void log_transaction(int accountID, TransactionType type, float amount, float oldBalance, float newBalance);
+void give_feedback(int accountID,char* message);
 
 // Reusable Functions
 int reusable_add_user(int sock, Role adder_role);
@@ -259,7 +268,6 @@ void log_transaction(int accountID, TransactionType type, float amount, float ol
     }
 
     // --- ACQUIRE LOCK ---
-    // Lock the *entire* file. This is crucial to prevent a race condition
     // where two threads try to get the next ID and append at the same time.
     struct flock lock;
     memset(&lock, 0, sizeof(lock));
@@ -270,9 +278,6 @@ void log_transaction(int accountID, TransactionType type, float amount, float ol
 
     // F_SETLKW: Blocking lock, will wait until it's acquired
     fcntl(fd, F_SETLKW, &lock);
-
-    // --- CRITICAL SECTION ---
-
     // 1. Get the next available ID (while locked)
     long next_trans_id = get_next_transaction_id(fd);
 
@@ -293,14 +298,46 @@ void log_transaction(int accountID, TransactionType type, float amount, float ol
     // 4. Write the new transaction
     write(fd, &trans, sizeof(Transaction));
 
-    // --- END CRITICAL SECTION ---
-
     // 5. Release the lock
     lock.l_type = F_UNLCK;
     fcntl(fd, F_SETLK, &lock);
 
     close(fd);
 }
+
+void give_feedback(int accountId, char* message) {
+    int fd = open(FEEDBACK, O_RDWR | O_CREAT, 0666);
+    if (fd < 0)
+    {
+        perror("Failed to open feedback file\n");
+        return;
+    }
+    // --- ACQUIRE LOCK ---
+    struct flock lock;
+    memset(&lock, 0, sizeof(lock));
+    lock.l_type = F_WRLCK;
+    lock.l_whence = SEEK_SET;
+    lock.l_start = 0;
+    lock.l_len = 0;
+
+    fcntl(fd, F_SETLKW, &lock);
+    
+    // --- START FIX ---
+    Feedback fb;
+    fb.accountID = accountId;
+    // You must copy the string, not assign the pointer
+    strncpy(fb.message, message, sizeof(fb.message) - 1);
+    fb.message[sizeof(fb.message) - 1] = '\0'; // Ensure null-termination
+    // --- END FIX ---
+
+    lseek(fd, 0, SEEK_END);
+    write(fd, &fb, sizeof(Feedback));
+
+    lock.l_type = F_UNLCK;
+    fcntl(fd, F_SETLK, &lock);
+    close(fd);
+}
+
 
 // Creates a default admin USER if users.dat is empty
 void initialize_admin()
@@ -429,23 +466,21 @@ void reusable_modify_user(int sock, Role modifier_role, int target_userID)
     int user_to_modify;
 
     if (target_userID == -1)
-    { // Admin/Employee modifying OTHERS
+    { // Admin / Employee modifying Customer
         write_to_client(sock, "Enter UserID to modify: ");
         read_from_client(sock, buffer, sizeof(buffer));
         user_to_modify = atoi(buffer);
     }
     else
-    { // User modifying their OWN password
+    { // User modifying their own password
         user_to_modify = target_userID;
     }
-
     int fd = open(USER_FILE, O_RDWR);
     if (fd < 0)
     {
         write_to_client(sock, "Server error: Cannot open user file.\n");
         return;
     }
-
     long offset = find_user_offset(fd, user_to_modify);
     if (offset == -1)
     {
@@ -578,10 +613,54 @@ void reusable_activate_deactivate_account(int sock, int choice)
     close(fd);
 }
 // ===================================
-// Loan & Transaction Functions
+// Feedback Function
 // ===================================
 
+void view_feedback(int sock) {
+    int fd = open(FEEDBACK, O_RDONLY);
+    if (fd < 0) {
+        write_to_client(sock, "Error: Could not open feedback file.\n");
+        return;
+    }
 
+    // Apply a shared read lock
+    struct flock lock;
+    memset(&lock, 0, sizeof(lock));
+    lock.l_type = F_RDLCK;
+    lock.l_start = 0;
+    lock.l_len = 0;
+    fcntl(fd, F_SETLKW, &lock);
+
+    Feedback fb;
+    char buffer[8192] = {0}; // Large buffer for all feedback
+    char line[1100]; // Message size + prefix
+    int found = 0;
+
+    strcat(buffer, "\n--- Customer Feedback ---\n");
+
+    while(read(fd, &fb, sizeof(Feedback)) == sizeof(Feedback)) {
+        found = 1;
+        sprintf(line, "From Account %d: %s\n---\n", fb.accountID, fb.message);
+        // Prevent buffer overflow in the rare case of too much feedback
+        if (strlen(buffer) + strlen(line) < sizeof(buffer) - 1) {
+            strcat(buffer, line);
+        }
+    }
+
+    if (!found) {
+        strcat(buffer, "No feedback submitted yet.\n");
+    }
+
+    lock.l_type = F_UNLCK;
+    fcntl(fd, F_SETLK, &lock);
+    close(fd);
+
+    write_to_client(sock, buffer);
+}
+
+// ===================================
+// Loan & Transaction Functions
+// ===================================
  // Reads the loan file and sends a list of pending loans to the client.
  // (Used by Manager and Employee)
  
@@ -629,7 +708,6 @@ void view_pending_loans(int sock)
             found_pending = 1;
         }
     }
-
     if (!found_pending)
     {
         strcat(buffer, "No pending loans found.\n");
@@ -643,10 +721,7 @@ void view_pending_loans(int sock)
     write_to_client(sock, buffer);
 }
 
-/**
- * @brief Allows the manager to approve or reject a loan.
- * (Used by Manager)
- */
+   // Allows the manager to approve or reject a loan.
 void assign_loan(int sock)
 {
     int fd;
@@ -771,7 +846,6 @@ void assign_loan(int sock)
         {
             write_to_client(sock, "Error: This loan is not pending or processing.\n");
         }
-
         // Unlock the loan record
         lock.l_type = F_UNLCK;
         fcntl(fd, F_SETLK, &lock);
@@ -784,15 +858,12 @@ void assign_loan(int sock)
     close(fd);
 }
 
-/**
- * @brief Allows an employee to claim a PENDING loan for processing.
- * (Used by Employee)
- */
+ // Allows an employee to claim a PENDING loan for processing.
 void employee_process_loan(int sock, User emp_user)
 {
     char buffer[1024];
 
-    // 1. Show them the pending loans
+    // 1. Show  pending loans
     view_pending_loans(sock);
 
     // 2. Ask which one to claim
@@ -845,10 +916,9 @@ void employee_process_loan(int sock, User emp_user)
     close(fd);
 }
 
-/**
- * @brief Views all transactions for a specific account.
- * (Used by Employee and Customer)
- */
+
+ //Views all transactions for a specific account.
+
 void view_transactions(int sock, int account_no)
 {
     int fd = open(TRANSACTION_FILE, O_RDONLY);
@@ -917,10 +987,8 @@ void view_transactions(int sock, int account_no)
     write_to_client(sock, buffer);
 }
 
-/**
- * @brief Allows a customer to apply for a new loan.
- * (Used by Customer)
- */
+  //customer to apply for a new loan.
+
 void customer_apply_loan(int sock, User user)
 {
     char buffer[1024];
@@ -1084,15 +1152,15 @@ void manager_menu(int sock, User mgr_user)
     char buffer[1024];
     while (1)
     {
-        write_to_client(sock, "\n--- Manager Menu ---\n1. Activate Customer Account\n2. Deactivate Customer Account\n3. View Pending Loans\n4. Assign (Approve/Reject) Loan\n5. Exit\nChoice: ");
+        write_to_client(sock, "\n--- Manager Menu ---\n1. Activate Customer Account\n2. Deactivate Customer Account\n3. View Pending Loans\n4. Assign (Approve/Reject) Loan\n5. View Feedback\n6. Exit\nChoice: ");
         int choice;
         if (read_from_client(sock, buffer, sizeof(buffer)) <= 0)
-            choice = 5; // Force exit on disconnect
+            choice = 6; // Force exit on disconnect
         else
         {
             choice = atoi(buffer);
         }
-        if (choice == 5)
+        if (choice == 6)
             break;
 
         if (choice == 1)
@@ -1111,6 +1179,9 @@ void manager_menu(int sock, User mgr_user)
         { // Assign Loan
             assign_loan(sock);
         }
+        else if(choice == 5){
+            view_feedback(sock);
+        }
         else
         {
             write_to_client(sock, "Invalid choice.\n");
@@ -1126,16 +1197,15 @@ void employee_menu(int sock, User emp_user)
     char buffer[1024];
     while (1)
     {
-        write_to_client(sock, "\n--- Employee Menu ---\n1. Add New Customer\n2. Modify Customer Details\n3. Process (Claim) Loan\n4. View Customer Transactions\n5. Exit\nChoice: ");
-        read_from_client(sock, buffer, sizeof(buffer));
+        write_to_client(sock, "\n--- Employee Menu ---\n1. Add New Customer\n2. Modify Customer Details\n3. Process (Claim) Loan\n4. View Customer Transactions\n5. View Feedback\n6. Exit\nChoice: ");
         int choice;
         if (read_from_client(sock, buffer, sizeof(buffer)) <= 0)
-            choice = 5; // Force exit on disconnect
+            choice = 6; // Force exit on disconnect
         else
         {
             choice = atoi(buffer);
         }
-        if (choice == 5)
+        if (choice == 6)
             break;
 
         if (choice == 1)
@@ -1161,6 +1231,9 @@ void employee_menu(int sock, User emp_user)
             read_from_client(sock, buffer, sizeof(buffer));
             int acc_no = atoi(buffer);
             view_transactions(sock, acc_no);
+        }
+        else if(choice == 5){
+            view_feedback(sock);
         }
         else
         {
@@ -1199,23 +1272,24 @@ void customer_menu(int sock, User user, Account account)
                         "5. View Account Details\n"
                         "6. Apply for Loan\n"
                         "7. View My Transactions\n"
-                        "8. Exit\n"
+                        "8. View Feedback\n"
+                        "9. Exit\n"
                         "Choice: ",
                 user.name, account.account_no);
         write_to_client(sock, buffer);
 
         if (read_from_client(sock, buffer, sizeof(buffer)) <= 0)
         {
-            choice = 8; // Force exit on disconnect
+            choice = 9; // Force exit on disconnect
         }
         else
         {
             choice = atoi(buffer);
-            if (choice == 8)
+            if (choice == 9)
                 break;
 
             // Check if bank account is active
-            if (!account.is_active && choice != 4 && choice != 8)
+            if (!account.is_active && choice != 4 && choice != 9)
             { // Can still change password or exit
                 write_to_client(sock, "Your bank account is deactivated. Please contact a manager.\n");
                 continue;
@@ -1321,6 +1395,16 @@ void customer_menu(int sock, User user, Account account)
             { // View My Transactions
                 view_transactions(sock, account.account_no);
             }
+            else if(choice == 8){
+                // Give Feedback
+                write_to_client(sock, "Enter your feedback (max 1024 chars): ");
+                if (read_from_client(sock, buffer, sizeof(buffer)) > 0) {
+                     give_feedback(account.account_no, buffer);
+                     write_to_client(sock, "Feedback submitted. Thank you!\n");
+                } else {
+                    write_to_client(sock, "Feedback cancelled.\n");
+                }
+            }
             else
             {
                 write_to_client(sock, "Invalid choice.\n");
@@ -1330,7 +1414,7 @@ void customer_menu(int sock, User user, Account account)
 }
 
 // ============================
-// Client Handler (With Spinlock)
+// Client Handler
 // ============================
 void *handle_client(void *sock)
 {
@@ -1338,9 +1422,9 @@ void *handle_client(void *sock)
     free(sock);
     char buffer[1024], pass[20];
     int user_id;
-    int logged_in_slot = -1; // --- NEW: Track which slot this user claimed
+    int logged_in_slot = -1; // Track which slot this user claimed
 
-    // 1. --- LOGIN WITH USER_FILE ---
+    // Login with user file
     int user_fd = open(USER_FILE, O_RDONLY);
     if (user_fd < 0)
     {
@@ -1351,7 +1435,7 @@ void *handle_client(void *sock)
 
     write_to_client(new_socket, "Welcome to IIITB Bank\n");
 
-    // --- MODIFIED: Check read_from_client for disconnect ---
+    // --- Check read_from_client for disconnect ---
     write_to_client(new_socket, "Enter UserID: ");
     if (read_from_client(new_socket, buffer, sizeof(buffer)) <= 0)
     {
@@ -1362,7 +1446,7 @@ void *handle_client(void *sock)
     }
     user_id = atoi(buffer);
 
-    // --- MODIFIED: Check read_from_client for disconnect ---
+    // --- Check read_from_client for disconnect ---
     write_to_client(new_socket, "Enter password: ");
     if (read_from_client(new_socket, pass, sizeof(pass)) <= 0)
     {
@@ -1392,7 +1476,7 @@ void *handle_client(void *sock)
             else
             {
 
-                // --- NEW: Spinlock Login Check ---
+                // --- Spinlock Login Check ---
                 int already_logged_in = 0;
 
                 // 1. Lock the global list
@@ -1437,11 +1521,7 @@ void *handle_client(void *sock)
                     else
                     {
                         // 5b. Slot was found! Proceed with login.
-                        // --- END OF NEW LOGIN LOGIC ---
-
                         write_to_client(new_socket, "Login successful!\n");
-
-                        // 2. --- DISPATCH BASED ON ROLE --- (Original Code)
                         if (user.role == ADMIN)
                         {
                             admin_menu(new_socket, user);
@@ -1456,7 +1536,7 @@ void *handle_client(void *sock)
                         }
                         else if (user.role == CUSTOMER)
                         {
-                            // 3. --- CUSTOMER: FIND BANK ACCOUNT ---
+                            // --- CUSTOMER: FIND BANK ACCOUNT ---
                             int acc_fd = open(ACCOUNT_FILE, O_RDONLY);
                             if (acc_fd < 0)
                             {
@@ -1480,16 +1560,15 @@ void *handle_client(void *sock)
                             }
                         }
 
-                        // --- NEW: Logout Logic ---
-                        // This code runs AFTER the user exits their menu
+                        // --- Logout Logic ---
+                        // after the user exit the system
                         pthread_spin_lock(&login_lock);
                         if (logged_in_users[logged_in_slot] == user.userID)
-                        {                                         // Double-check it's still us
+                        {                                         
                             logged_in_users[logged_in_slot] = -1; // Free the slot
                         }
                         pthread_spin_unlock(&login_lock);
                         printf("User %d session ended.\n", user.userID);
-                        // --- END NEW LOGOUT LOGIC ---
                     }
                 }
             }
@@ -1543,13 +1622,12 @@ int main()
         exit(EXIT_FAILURE);
     }
 
-    // --- MODIFIED: Initialize spinlock ---
+    // --- Initialize spinlock ---
     pthread_spin_init(&login_lock, 0); // Replaced pthread_mutex_init
     for (int i = 0; i < MAX_CLIENTS; i++)
     {
         logged_in_users[i] = -1; // -1 means slot is free
     }
-    // --- END MODIFIED ---
 
     printf("Bank Server started. Waiting for clients on port %d...\n", PORT);
 
