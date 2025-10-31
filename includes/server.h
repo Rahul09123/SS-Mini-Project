@@ -1,4 +1,3 @@
-// Moved header into includes/
 #ifndef SERVER_H
 #define SERVER_H
 
@@ -33,10 +32,11 @@ typedef enum
 } Role;
 typedef enum
 {
-    PENDING = 1,
-    PROCESSING = 2,
-    APPROVED = 3,
-    REJECTED = 4
+    PENDING = 1,          // Initial state when customer applies
+    ASSIGNED = 2,         // When manager assigns to employee
+    APPROVED = 3,         //  employee approves
+    REJECTED = 4,         //  employee rejects
+    PROCESSING = 5       // employee is reviewing
 } LoanStatus;
 typedef enum
 {

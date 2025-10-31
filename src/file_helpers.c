@@ -58,7 +58,7 @@ int get_next_user_id(int fd)
 int get_next_account_no(int fd)
 {
     Account acc;
-    int max_no = 5000; // Start customer accounts from 5000
+    int max_no = 5000; // customer account number starts from 5000
     lseek(fd, 0, SEEK_SET);
     while (read(fd, &acc, sizeof(Account)) == sizeof(Account))
     {
@@ -73,7 +73,7 @@ long get_next_loan_id(int fd)
     Loan loan;
     long max_id = 0; // Start from 0, so first loan is 1
 
-    lseek(fd, 0, SEEK_SET); // Rewind to the start of the file
+    lseek(fd, 0, SEEK_SET); // moves to the start of the file
 
     while (read(fd, &loan, sizeof(Loan)) == sizeof(Loan))
     {
@@ -90,7 +90,7 @@ long get_next_transaction_id(int fd)
     Transaction trans;
     long max_id = 0; // Start from 0, so first transaction is 1
 
-    lseek(fd, 0, SEEK_SET); // Rewind to the start of the file
+    lseek(fd, 0, SEEK_SET); // move to the start of the file
 
     while (read(fd, &trans, sizeof(Transaction)) == sizeof(Transaction))
     {
