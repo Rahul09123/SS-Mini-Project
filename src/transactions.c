@@ -186,7 +186,7 @@ void view_transactions(int sock, int account_no)
             else if (trans.type == LOAN_DEPOSIT)
                 strcpy(type_str, "LOAN_DEPOSIT");
             else
-                strcpy(type_str, "UNKNOWN");
+                strcpy(type_str, "TRANSFER");
 
             char time_buf[30];
             strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", localtime(&trans.timestamp));
