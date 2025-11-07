@@ -577,7 +577,6 @@ void customer_menu(int sock, User user, Account account)
                     sprintf(buffer, "Account No: %d\nBalance: %.2f\nJoint: %s\nActive: %s\n",
                             account.account_no,
                             account.balance,
-                            account.is_active ? "Yes" : "No",
                             account.is_active ? "Yes" : "No");
                     write_to_client(sock, buffer);
                 }
