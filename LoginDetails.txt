@@ -1,0 +1,14 @@
+Admin
+   1000 admin admin123
+   
+Manager
+   1002 raman 1234
+   
+Employee
+   1001 rahul 1234
+   
+Customer
+   1003 ram ram1234 (deactivated) 
+   1006 suchir suchir
+   1007 rohit 123
+   1009 aayank 123
